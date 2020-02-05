@@ -42,7 +42,7 @@ for part_key in resp['Table']['PartitionKeys']:
     part_name_set.add((level, part_key['Name']))
     level += 1
 
-print(part_name_set)
+print("Partition name set:", part_name_set)
 
 s3_client = session_handle.resource(service_name='s3')
 bucket = s3_client.Bucket(name=bucket)
@@ -59,7 +59,7 @@ for obj in bucket.objects.filter(Prefix=p_prefix):
 
 unique_dir_list = list(unique_dir)
 unique_dir_list.sort()
-print(unique_dir_list)
+print("Directories       :", unique_dir_list)
 
 partitions = glue_client.get_partitions(
     #       CatalogId='awsdatacatalog',
@@ -74,4 +74,4 @@ for partition_list in partitions['Partitions']:
 
 unique_part_list = list(unique_part)
 unique_part_list.sort()
-print(unique_part_list)
+print("Partitions        :", unique_part_list)
