@@ -1,15 +1,19 @@
 import boto3
 import sys
 import getopt
+import logging
 
 DEFAULT_PROFILE = None
 DEFAULT_REGION = None
 DEFAULT_OUTPUT = 's3://aws-athena-query-results-513065973071-us-east-1/alter_table_log'
 DEFAULT_DROP_MODE = 'yes'
-USAGE_STR = 'Usage: partition_synch.py -t <database.table> [-p <profile>] [-r <region>] [-o <output>] [-d <yes|no> [-v]'
+USAGE_STR = 'Usage: python3 partition_synch.py -t <database.table> [-p <profile>] [-r <region>] [-o <output>] [-d <yes|no> [-v]'
 
 
 def main_session(argv):
+    logging.basicConfig(level=logging.INFO)
+    log = logging.getLogger("athena-partition-synch")
+
     full_table_name, profile, region, output, drop, verbose = parse_parameters(argv)
     database, table = full_table_name.split('.')
     session_handle = boto3.session.Session(profile_name=profile, region_name=region)
@@ -19,39 +23,38 @@ def main_session(argv):
     missing_partition_set = folder_set.difference(partition_value_set)
     extra_partition_set = partition_value_set.difference(folder_set)
     if verbose:
-        print('\n',
-              "Table:", table, '\n',
-              "Database:", database, '\n',
-              "Profile:", profile, '\n',
-              "Output:", output, '\n',
-              "Region:", region, '\n',
-              "Bucket:", bucket, '\n',
-              "Prefix:", prefix, '\n'
-              "Drop Partitions:", drop)
-        print("Partition Name:", partition_name_list)
-        print("Partition Values:", sorted(list(partition_value_set)))
-        print("Folders:         ", sorted(list(folder_set)))
-        print("Partitions to add:", missing_partition_set)
-        print("Partitions to drop:", extra_partition_set)
+        log.info("Table:{}".format(table))
+        log.info("Database:{}".format(database))
+        log.info("Profile:{}".format(profile))
+        log.info("Output:{}".format(output))
+        log.info("Region:{}".format(region))
+        log.info("Bucket:{}".format(bucket))
+        log.info("Prefix:{}".format(prefix))
+        log.info("Drop Partitions:{}".format(drop))
+        log.info("Partition Names:{}".format(partition_name_list))
+        log.info("Partition Values  :{}".format(sorted(list(partition_value_set))))
+        log.info("Folders           :{}".format(sorted(list(folder_set))))
+        log.info("Partitions to add :{}".format(missing_partition_set))
+        log.info("Partitions to drop:{}".format(extra_partition_set))
     if len(missing_partition_set) == 0 and len(extra_partition_set) == 0:
-        print("The {}.{} table partitions are up-to-date with s3://{}/{}".format(database, table, bucket, prefix))
+        log.info("The {}.{} table partitions are up-to-date with s3://{}/{}".format(database, table, bucket, prefix))
         exit(0)
     if len(missing_partition_set) > 0:
-        print("Adding missing partitions to the {}.{} table from s3://{}/{}".format(database, table, bucket, prefix))
+        log.info("Adding missing partitions to the {}.{} table from s3://{}/{}".format(database, table, bucket, prefix))
         for ddl_str in adjust_partitions("ADD", missing_partition_set, partition_name_list, database, table, bucket, prefix):
             if verbose:
-                print("DDL String:", ddl_str)
+                log.info("DDL String:{}".format(ddl_str))
             qid = execute_athena_command(session_handle, ddl_str, database, output)
             if verbose:
-                print(qid)
+                log.info("Query Id:{}".format(qid))
     if len(extra_partition_set) > 0 and drop == 'yes':
-        print("Dropping extra partitions to the {}.{} table from s3://{}/{}".format(database, table, bucket, prefix))
+        log.info("Dropping extra partitions to the {}.{} table from s3://{}/{}".format(database, table, bucket, prefix))
         for ddl_str in adjust_partitions("DROP", extra_partition_set, partition_name_list, database, table, bucket, prefix):
             if verbose:
-                print("DDL String:", ddl_str)
+                log.info("DDL String:{}".format(ddl_str))
             qid = execute_athena_command(session_handle, ddl_str, database, output)
             if verbose:
-                print(qid)
+                log.info("Query Id:{}".format(qid))
 
 
 def adjust_partitions(p_operation, p_diff_set, p_partition_name_list, p_database, p_table, p_bucket, p_prefix):
@@ -79,6 +82,7 @@ def parse_parameters(argv):
     verbose = False
     drop = DEFAULT_DROP_MODE
 
+    # Consider using import argparse
     try:
         opts, args = getopt.getopt(argv, "hvt:p:r:o:d:", ["table=", "profile=", "region=", "output=", "drop="])
     except getopt.GetoptError:
@@ -102,6 +106,7 @@ def parse_parameters(argv):
             drop = arg.lower() if arg.lower() in ('yes', 'no') else DEFAULT_DROP_MODE
 
     return table, profile, region, output, drop, verbose
+
 
 def get_bucket_directories(p_session, p_bucket, p_prefix) -> set():
     s3_client = p_session.resource(service_name='s3')
