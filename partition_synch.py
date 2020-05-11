@@ -5,14 +5,14 @@ import logging
 
 DEFAULT_PROFILE = None
 DEFAULT_REGION = None
-DEFAULT_OUTPUT = 's3://aws-athena-query-results-513065973071-us-east-1/alter_table_log'
+DEFAULT_OUTPUT = 's3://aws-athena-query-results-513065973071-us-west-2/alter_table_log'
 DEFAULT_DROP_MODE = 'yes'
 USAGE_STR = 'Usage: python3 partition_synch.py -t <database.table> [-p <profile>] [-r <region>] [-o <output>] [-d <yes|no> [-v]'
 
 
 def main_session(argv):
     logging.basicConfig(level=logging.INFO)
-    log = logging.getLogger("athena-partition-synch")
+    log = logging.getLogger("athena-partition-sync")
 
     full_table_name, profile, region, output, drop, verbose = parse_parameters(argv)
     database, table = full_table_name.split('.')
@@ -20,8 +20,13 @@ def main_session(argv):
     bucket, prefix, partition_name_list = get_bucket_prefix_partition(session_handle, database, table)
     partition_value_set = get_table_partitions(session_handle, database, table)
     folder_set = get_bucket_directories(session_handle, bucket, prefix)
-    missing_partition_set = folder_set.difference(partition_value_set)
-    extra_partition_set = partition_value_set.difference(folder_set)
+    partition_folder_dict = build_partition_folder_dict(folder_set, partition_name_list)
+    # print(partition_folder_dict)
+    missing_partition_dict = {key: value for key, value in partition_folder_dict.items() if key not in partition_value_set}
+    # print(missing_partition_dict)
+    extra_partition_set = partition_value_set.difference(partition_folder_dict.keys())
+    # print(extra_partition_set)
+
     if verbose:
         log.info("Table:{}".format(table))
         log.info("Database:{}".format(database))
@@ -34,14 +39,15 @@ def main_session(argv):
         log.info("Partition Names:{}".format(partition_name_list))
         log.info("Partition Values  :{}".format(sorted(list(partition_value_set))))
         log.info("Folders           :{}".format(sorted(list(folder_set))))
-        log.info("Partitions to add :{}".format(missing_partition_set))
+        log.info("Adjusted Folders  :{}".format(partition_folder_dict))
+        log.info("Partitions to add :{}".format(missing_partition_dict))
         log.info("Partitions to drop:{}".format(extra_partition_set))
-    if len(missing_partition_set) == 0 and len(extra_partition_set) == 0:
+    if len(missing_partition_dict) == 0 and len(extra_partition_set) == 0:
         log.info("The {}.{} table partitions are up-to-date with s3://{}/{}".format(database, table, bucket, prefix))
         exit(0)
-    if len(missing_partition_set) > 0:
+    if len(missing_partition_dict) > 0:
         log.info("Adding missing partitions to the {}.{} table from s3://{}/{}".format(database, table, bucket, prefix))
-        for ddl_str in adjust_partitions("ADD", missing_partition_set, partition_name_list, database, table, bucket, prefix):
+        for ddl_str in adjust_partitions("ADD", missing_partition_dict, partition_name_list, database, table, bucket, prefix):
             if verbose:
                 log.info("DDL String:{}".format(ddl_str))
             qid = execute_athena_command(session_handle, ddl_str, database, output)
@@ -57,9 +63,13 @@ def main_session(argv):
                 log.info("Query Id:{}".format(qid))
 
 
-def adjust_partitions(p_operation, p_diff_set, p_partition_name_list, p_database, p_table, p_bucket, p_prefix):
+def adjust_partitions(p_operation, p_diff_dict, p_partition_name_list, p_database, p_table, p_bucket, p_prefix):
     # Can be changed to a single ADD / DROP for multiple partitions
-    for new_folder in p_diff_set:
+    if isinstance(p_partition_name_list, dict):
+        folder_list = p_diff_dict.keys()
+    else:
+        folder_list = p_diff_dict
+    for new_folder in folder_list:
         new_folder_list = new_folder.split('/')
         partition_str = ''
         for i in range(len(new_folder_list)):
@@ -69,7 +79,7 @@ def adjust_partitions(p_operation, p_diff_set, p_partition_name_list, p_database
 
         ddl_str = "ALTER TABLE {0}.{1} {2} PARTITION ({3})".format(p_database, p_table, p_operation, partition_str)
         if p_operation == 'ADD':
-            location = " LOCATION 's3://{0}/{1}{2}'".format(p_bucket, p_prefix, new_folder)
+            location = " LOCATION 's3://{0}/{1}{2}'".format(p_bucket, p_prefix, p_diff_dict[new_folder])
             ddl_str += location
         yield ddl_str
 
@@ -106,7 +116,6 @@ def parse_parameters(argv):
             drop = arg.lower() if arg.lower() in ('yes', 'no') else DEFAULT_DROP_MODE
 
     return table, profile, region, output, drop, verbose
-
 
 def get_bucket_directories(p_session, p_bucket, p_prefix) -> set():
     s3_client = p_session.resource(service_name='s3')
@@ -160,6 +169,24 @@ def execute_athena_command(p_session, p_command, p_database, p_output):
         ResultConfiguration={'OutputLocation': p_output}
     )
     return response
+
+def build_partition_folder_dict(p_folder_set, p_partition_name_list):
+    partition_folder_dict = {}
+    for folder in p_folder_set:
+        # print('folder===>', folder)
+        subfolders = folder.split('/')
+        final_parts = []
+        for subfolder in subfolders:
+            subparts = subfolder.split('=')
+            if len(subparts) > 1 and subparts[0] in p_partition_name_list:
+                final_parts.append(subparts[1])
+            else:
+                final_parts.append(subfolder)
+
+        partition_folder_dict['/'.join(final_parts)] = folder
+    # print(partition_folder_dict, '<===== adjusted_folder_set')
+    return partition_folder_dict
+
 
 if __name__ == '__main__':
     main_session(sys.argv[1:])
